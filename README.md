@@ -42,15 +42,24 @@ serverless stack. Instead of creating a real cloud account, paying for usage,
 and needing an internet connection, you start `openazure` locally and talk to
 it exactly like you would talk to the real services.
 
-It gives a developer four things:
+It gives a developer six things:
 
-- **Blob Storage** — store and fetch files ("blobs") grouped into containers.
-- **Table Storage** — store JSON records keyed by a `PartitionKey` + `RowKey`.
+- **Blob Storage** — store and fetch files ("blobs") grouped into containers;
+  block-blob staging and commit, metadata, access tiers, server-side copy,
+  SAS token stubs, and container lease stubs.
+- **Table Storage** — store JSON records keyed by a `PartitionKey` + `RowKey`;
+  insert/upsert/merge/replace/query including OData-lite `$filter`/`$top`/`$select`
+  and atomic batch transactions.
 - **Queue Storage** — push messages onto a queue and pull them off later, with
   a visibility timeout so a message you are working on isn't handed to anyone
   else until you finish (or time out).
 - **Functions runner** — register small Python handlers that run on an HTTP
   request or when a queue message arrives, the way Azure Functions do.
+- **Cosmos DB** — databases, containers with a partition key, and items; full
+  CRUD plus a SQL-subset query engine (`SELECT`/`WHERE`/`ORDER BY`/
+  `OFFSET … LIMIT`).
+- **File Shares** — shares, directories (hierarchical), and files; upload,
+  download, metadata, server-side copy, and directory listing.
 
 **Who is it for?** Developers who want to build and test code that uses Azure
 storage/functions **without touching the cloud** — for fast unit tests,
@@ -77,10 +86,12 @@ openazure/
 │   ├── __init__.py        # package exports + version
 │   ├── store.py           # shared sqlite3 backend (disk or :memory:)
 │   ├── errors.py          # typed errors -> HTTP status + Azure-style codes
-│   ├── blob.py            # BlobService    (containers / blobs)
-│   ├── table.py           # TableService   (entities by PartitionKey+RowKey)
+│   ├── blob.py            # BlobService    (containers / blobs / blocks / metadata)
+│   ├── table.py           # TableService   (entities, OData-lite query, batch)
 │   ├── queue.py           # QueueService   (visibility-timeout messages)
 │   ├── functions.py       # FunctionRunner (http + queue triggers)
+│   ├── cosmos.py          # CosmosService  (databases / containers / items / SQL)
+│   ├── fileshare.py       # FileShareService (shares / directories / files)
 │   ├── server.py          # one ThreadingHTTPServer exposing all services
 │   ├── cli.py             # `openazure` console entry point
 │   └── __main__.py        # `python -m openazure`
@@ -94,12 +105,14 @@ service classes can also be imported and called directly with no server.
 
 ## Services
 
-| Service   | Module          | Class            | Primitives | Local path prefix |
-|-----------|-----------------|------------------|------------|-------------------|
-| Blob      | `blob.py`       | `BlobService`    | containers, blobs (bytes, ETag, Content-MD5) | `/blob` |
-| Table     | `table.py`      | `TableService`   | tables, entities keyed by PartitionKey+RowKey; insert/upsert/merge/replace/query | `/table` |
-| Queue     | `queue.py`      | `QueueService`   | queues, messages with visibility timeout + pop receipts | `/queue` |
-| Functions | `functions.py`  | `FunctionRunner` | HTTP-trigger + queue-trigger Python handlers | `/functions` |
+| Service      | Module           | Class              | Primitives | Local path prefix |
+|--------------|------------------|--------------------|------------|-------------------|
+| Blob         | `blob.py`        | `BlobService`      | containers; blobs (bytes, ETag, Content-MD5); block-blob stage/commit; metadata; tier (Hot/Cool/Archive); server-side copy; SAS token stub; container lease stub | `/blob` |
+| Table        | `table.py`       | `TableService`     | tables; entities keyed by PartitionKey+RowKey; insert/upsert/merge/replace/query; OData-lite `$filter`/`$top`/`$select`; atomic batch transactions | `/table` |
+| Queue        | `queue.py`       | `QueueService`     | queues, messages with visibility timeout + pop receipts | `/queue` |
+| Functions    | `functions.py`   | `FunctionRunner`   | HTTP-trigger + queue-trigger Python handlers | `/functions` |
+| Cosmos DB    | `cosmos.py`      | `CosmosService`    | databases, containers (partition key), items (CRUD, upsert); SQL-subset query (SELECT/WHERE/ORDER BY/OFFSET LIMIT) | `/cosmos` |
+| File Shares  | `fileshare.py`   | `FileShareService` | shares, directories (hierarchical), files (upload/download/copy/metadata/delete), directory listing | `/files` |
 
 ## Quickstart
 
@@ -124,16 +137,44 @@ curl -X PUT  http://127.0.0.1:10000/blob/photos
 curl -X PUT  --data-binary @cat.jpg http://127.0.0.1:10000/blob/photos/cat.jpg
 curl         http://127.0.0.1:10000/blob/photos/cat.jpg --output out.jpg
 
-# Table: insert and read an entity
+# Block blob: stage blocks then commit
+curl -X POST --data-binary @part1.bin \
+     'http://127.0.0.1:10000/blob/photos/big.bin?comp=block&blockid=b1'
+curl -X PUT  -d '{"blocks":["b1"],"content_type":"application/octet-stream"}' \
+     'http://127.0.0.1:10000/blob/photos/big.bin?comp=blocklist'
+
+# Table: insert and read an entity; OData filter
 curl -X PUT  http://127.0.0.1:10000/table/People
 curl -X POST http://127.0.0.1:10000/table/People \
      -d '{"PartitionKey":"us","RowKey":"alice","age":30}'
 curl 'http://127.0.0.1:10000/table/People?pk=us&rk=alice'
+curl 'http://127.0.0.1:10000/table/People?pk=us&$filter=age%20gt%2025&$top=5'
+
+# Table batch transaction
+curl -X POST 'http://127.0.0.1:10000/table/People?comp=batch' \
+     -d '[{"op":"insert","entity":{"PartitionKey":"eu","RowKey":"bob","age":25}}]'
 
 # Queue: create, enqueue, dequeue
 curl -X PUT  http://127.0.0.1:10000/queue/jobs
 curl -X POST http://127.0.0.1:10000/queue/jobs/messages -d '{"body":"hello"}'
 curl 'http://127.0.0.1:10000/queue/jobs/messages?num=1&vt=30'
+
+# Cosmos DB: create database, container, item, query
+curl -X PUT  http://127.0.0.1:10000/cosmos/mydb
+curl -X PUT  http://127.0.0.1:10000/cosmos/mydb/users \
+     -d '{"partitionKey":"/country"}'
+curl -X POST http://127.0.0.1:10000/cosmos/mydb/users/items \
+     -d '{"id":"u1","country":"us","name":"Alice"}'
+curl -X POST http://127.0.0.1:10000/cosmos/mydb/users/query \
+     -d '{"query":"SELECT * FROM c WHERE c.country = '\''us'\''"}'
+
+# File Shares: create share, directory, upload and download a file
+curl -X PUT  http://127.0.0.1:10000/files/myshare -d '{"quota_gb":100}'
+curl -X PUT  'http://127.0.0.1:10000/files/myshare/docs?comp=dir' -d '{}'
+curl -X PUT  --data-binary @readme.txt \
+     http://127.0.0.1:10000/files/myshare/docs/readme.txt
+curl         http://127.0.0.1:10000/files/myshare/docs/readme.txt
+curl         'http://127.0.0.1:10000/files/myshare/docs?comp=dir'
 ```
 
 Or use the classes directly in Python (no server needed):
@@ -147,6 +188,22 @@ blob = BlobService(store)
 blob.create_container("docs")
 blob.put_blob("docs", "hello.txt", b"hi there", "text/plain")
 print(blob.get_blob("docs", "hello.txt")["content"])  # b'hi there'
+```
+
+Cosmos DB:
+
+```python
+from openazure.store import Store
+from openazure.cosmos import CosmosService
+
+store = Store(in_memory=True)
+cosmos = CosmosService(store)
+cosmos.create_database("mydb")
+cosmos.create_container("mydb", "items", "/category")
+cosmos.create_item("mydb", "items", {"id": "1", "category": "A", "val": 42})
+results = cosmos.query_items("mydb", "items",
+                             "SELECT * FROM c WHERE c.category = 'A'")
+print(results[0]["val"])  # 42
 ```
 
 Register an Azure-Functions-style handler:
@@ -228,8 +285,8 @@ runtime dependencies. Works on Linux, macOS, and Windows.
 ## Topics / Domains
 
 `azure-emulator` · `local-development` · `cloud-emulation` · `blob-storage` ·
-`table-storage` · `queue-storage` · `serverless-functions` · `testing` ·
-`offline-development` · `developer-tools`
+`table-storage` · `queue-storage` · `serverless-functions` · `cosmos-db` ·
+`file-shares` · `testing` · `offline-development` · `developer-tools`
 
 ## Verification
 
@@ -240,16 +297,30 @@ HTTP server (started in-process on an OS-assigned port and driven with
 
 ```
 $ python -m pytest -q
-52 passed
+170 passed
 ```
 
-**52 tests pass** (`tests/test_blob.py`, `tests/test_table.py`,
-`tests/test_queue.py`, `tests/test_functions.py`, `tests/test_server.py`),
-covering blob round-trips and Content-MD5, table insert/upsert/merge/replace/
-query, queue visibility-timeout redelivery and pop-receipt deletion, function
-HTTP and queue triggers (including at-least-once behavior on handler failure),
-and the full HTTP server for all four services. CI runs the same suite on
-Ubuntu, macOS, and Windows across Python 3.10–3.13.
+**170 tests pass** (`tests/test_blob.py`, `tests/test_blob_extended.py`,
+`tests/test_table.py`, `tests/test_table_extended.py`, `tests/test_queue.py`,
+`tests/test_functions.py`, `tests/test_server.py`, `tests/test_server_extended.py`,
+`tests/test_cosmos.py`, `tests/test_fileshare.py`), covering:
+
+- Blob round-trips, Content-MD5, block-blob staging and commit, metadata,
+  access tiers (Hot/Cool/Archive), server-side copy, SAS token stubs,
+  container lease acquire/release.
+- Table insert/upsert/merge/replace/query, OData-lite `$filter` (eq/ne/gt/lt/
+  ge/le/and, string/number/bool values), `$top`, `$select`, atomic batch
+  transactions with rollback on failure.
+- Queue visibility-timeout redelivery and pop-receipt deletion.
+- Function HTTP and queue triggers (including at-least-once behavior on handler
+  failure).
+- Cosmos DB: databases, containers, items (CRUD + upsert), partition key
+  scoping, SQL-subset queries (SELECT/WHERE/ORDER BY/OFFSET LIMIT).
+- File Shares: shares, directories (hierarchical, empty-check enforcement),
+  files (upload/download/copy/metadata/delete), directory listing.
+- Full HTTP server for all six services.
+
+CI runs the same suite on Ubuntu, macOS, and Windows across Python 3.10–3.13.
 
 ## Roadmap
 
@@ -258,11 +329,17 @@ The following are **not implemented yet** and are tracked as roadmap items
 
 - Azure-native SDK / connection-string wire compatibility (current API is a
   clean local REST surface, not the byte-for-byte Azure REST protocol).
-- Shared Access Signatures (SAS) and account-key authentication.
-- Blob block/append/page blob types, snapshots, and leases.
-- Table OData `$filter` query-language parsing (current filtering is exact-match).
+- Shared Access Signatures (SAS) with actual enforcement (current stub
+  generates signed URLs but does not validate them on GET/PUT).
+- Blob snapshots, page blobs, and append blobs.
+- Full OData `$filter` language (nested parens, `or`, `not`, `startswith`,
+  `contains`; current subset supports `and`, six comparison operators,
+  string/number/bool literals).
+- Cosmos DB stored procedures, triggers, change feed, and cross-partition
+  aggregation queries.
+- File Share SMB/NFS protocol access (current API is HTTP-only).
 - Timer-trigger and blob-trigger functions; a persistent function scheduler.
-- Cosmos DB, Service Bus, and Event Hubs emulation.
+- Service Bus and Event Hubs emulation.
 
 ## License
 

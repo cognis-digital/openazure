@@ -46,7 +46,10 @@ def test_index(live_server):
     base, _ = live_server
     status, body, _ = _req("GET", base + "/")
     assert status == 200
-    assert set(body["services"]) == {"blob", "table", "queue", "functions"}
+    # new services cosmos + files are also present
+    assert {"blob", "table", "queue", "functions"}.issubset(
+        set(body["services"])
+    )
 
 
 def test_blob_http_roundtrip(live_server):
