@@ -1,5 +1,39 @@
 # openazure
 
+## Usage — step by step
+
+`openazure` is a local open-source emulator of Azure primitives (blob / queue),
+with thin HTTP client subcommands for quick manual checks.
+
+1. **Install** (editable from a clone, or from the wheel):
+   ```bash
+   pip install -e .
+   # provides the `openazure` console script
+   ```
+2. **Start the local server** (defaults to `127.0.0.1:10000`; it persists to
+   `./openazure-data` unless you pass `--in-memory`):
+   ```bash
+   openazure serve --data-dir ./openazure-data
+   # or ephemeral:
+   openazure --port 10000 serve --in-memory
+   ```
+3. **Exercise the data plane** with the built-in HTTP client subcommands (these
+   talk to a running `serve` instance — `--host`/`--port` are top-level flags):
+   ```bash
+   openazure --port 10000 blob ls my-container
+   openazure --port 10000 queue put jobs '{"task":"resize"}'
+   ```
+4. **Read / use the output.** The client subcommands print the server's JSON
+   response and exit non-zero on HTTP errors (status ≥ 400), so they double as
+   simple health checks. `openazure version` prints the version.
+5. **Use it in CI.** Launch the server in the background, run your Azure-SDK
+   tests against the local endpoint, then tear it down:
+   ```bash
+   openazure serve --in-memory &
+   # ... run tests pointed at http://127.0.0.1:10000 ...
+   openazure --port 10000 queue put smoke '{"ping":1}'
+   ```
+
 ## What is this?
 
 **openazure** is a small, self-contained program you run **on your own machine**
