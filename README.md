@@ -452,6 +452,12 @@ The following are **not implemented yet** and are tracked as roadmap items
   template notifications with property substitution, PNS feedback processing,
   and per-installation tag management via PATCH.
 
+## Interoperability
+
+`{}` composes with the 300+ tool Cognis suite — JSON in/out and a shared
+OpenAI-compatible `/v1` backbone. See **[INTEROP.md](INTEROP.md)** for the
+suite map, composition patterns, and reference stacks.
+
 ## License
 
 Cognis Open Collaboration License (COCL) 1.0 — see [LICENSE](LICENSE).
