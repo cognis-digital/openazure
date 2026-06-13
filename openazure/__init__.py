@@ -2,8 +2,9 @@
 
 openazure provides local, in-process emulations of Azure Blob Storage,
 Table Storage, Queue Storage, Azure Functions, Cosmos DB, Azure Files,
-Service Bus, Event Hubs, and Event Grid, for local development, testing,
-and offline work.
+Service Bus, Event Hubs, Event Grid, Key Vault, Managed Identity,
+App Configuration, Azure Monitor, and Notification Hubs, for local
+development, testing, and offline work.
 
 This project is an independent open reimplementation and is NOT affiliated
 with, endorsed by, or sponsored by Microsoft. "Azure" is used only
@@ -11,7 +12,7 @@ nominatively to describe API compatibility. It implements a compatible
 subset and is not intended for production use.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .blob import BlobService
 from .table import TableService
@@ -22,6 +23,11 @@ from .fileshare import FileShareService
 from .servicebus import ServiceBusService
 from .eventhubs import EventHubsService
 from .eventgrid import EventGridService
+from .keyvault import KeyVaultService
+from .managedidentity import ManagedIdentityService
+from .appconfig import AppConfigService
+from .monitor import MonitorService
+from .notificationhubs import NotificationHubsService
 
 __all__ = [
     "BlobService",
@@ -33,5 +39,10 @@ __all__ = [
     "ServiceBusService",
     "EventHubsService",
     "EventGridService",
+    "KeyVaultService",
+    "ManagedIdentityService",
+    "AppConfigService",
+    "MonitorService",
+    "NotificationHubsService",
     "__version__",
 ]

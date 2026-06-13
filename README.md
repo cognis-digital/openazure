@@ -42,7 +42,7 @@ serverless stack. Instead of creating a real cloud account, paying for usage,
 and needing an internet connection, you start `openazure` locally and talk to
 it exactly like you would talk to the real services.
 
-It gives a developer nine things:
+It gives a developer fourteen things:
 
 - **Blob Storage** — store and fetch files ("blobs") grouped into containers;
   block-blob staging and commit, metadata, access tiers, server-side copy,
@@ -73,6 +73,27 @@ It gives a developer nine things:
   event subscriptions with event-type, subject prefix/suffix, and property
   equality filters; publish events with fan-out to matching subscriptions;
   stored-event inspection for testing.
+- **Key Vault** — secrets (create/get/list/delete/recover/purge, soft-delete,
+  full version history), keys (RSA/EC/oct; encrypt/decrypt/wrap/unwrap with a
+  deterministic test cipher), and certificate metadata (create/get/list/
+  delete/recover/purge); soft-delete lifecycle for all three object types.
+- **Managed Identity / Azure AD-lite** — register named identities (user-
+  assigned MI placeholders); issue signed HMAC-SHA256 bearer tokens (JWT-like
+  three-part format); validate and revoke tokens; role assignment to identities
+  with scope.
+- **App Configuration** — key-values with labels, content types, tags, and
+  ETags; optimistic concurrency via If-Match; lock/unlock (read-only); full
+  revision history per key+label; feature flags (create/toggle/list with
+  client-filter conditions); named snapshots capturing point-in-time state.
+- **Azure Monitor** — metric ingestion (single and batch) with namespace,
+  dimensions, and custom timestamp; metric queries with avg/min/max/sum/count
+  aggregation over configurable time buckets; log workspaces with multi-table
+  log ingestion; SQL-subset log queries (SELECT/WHERE/ORDER BY/LIMIT); alert
+  rules with threshold evaluation over a sliding time window.
+- **Notification Hubs** — hub management; device registration and installation
+  APIs (create/update/delete/list with tag filters); tag-expression targeted
+  send (``&&``, ``||``, ``!``, parentheses); platform-scoped send; all sent
+  notifications captured for test inspection.
 
 **Who is it for?** Developers who want to build and test code that uses Azure
 storage/functions **without touching the cloud** — for fast unit tests,
@@ -96,22 +117,27 @@ standard library — **no third-party runtime dependencies**.
 ```
 openazure/
 ├── openazure/
-│   ├── __init__.py        # package exports + version
-│   ├── store.py           # shared sqlite3 backend (disk or :memory:)
-│   ├── errors.py          # typed errors -> HTTP status + Azure-style codes
-│   ├── blob.py            # BlobService       (containers / blobs / blocks / metadata)
-│   ├── table.py           # TableService      (entities, OData-lite query, batch)
-│   ├── queue.py           # QueueService      (visibility-timeout messages, update)
-│   ├── functions.py       # FunctionRunner    (http/queue/timer/blob/servicebus triggers)
-│   ├── cosmos.py          # CosmosService     (databases / containers / items / SQL)
-│   ├── fileshare.py       # FileShareService  (shares / directories / files)
-│   ├── servicebus.py      # ServiceBusService (queues, topics/subs, SQL-filter, sessions)
-│   ├── eventhubs.py       # EventHubsService  (hubs, partitions, consumer groups, events)
-│   ├── eventgrid.py       # EventGridService  (topics, subscriptions, publish/filter)
-│   ├── server.py          # one ThreadingHTTPServer exposing all services
-│   ├── cli.py             # `openazure` console entry point
-│   └── __main__.py        # `python -m openazure`
-└── tests/                 # end-to-end pytest suite
+│   ├── __init__.py           # package exports + version
+│   ├── store.py              # shared sqlite3 backend (disk or :memory:)
+│   ├── errors.py             # typed errors -> HTTP status + Azure-style codes
+│   ├── blob.py               # BlobService          (containers / blobs / blocks / metadata)
+│   ├── table.py              # TableService         (entities, OData-lite query, batch)
+│   ├── queue.py              # QueueService         (visibility-timeout messages, update)
+│   ├── functions.py          # FunctionRunner       (http/queue/timer/blob/servicebus triggers)
+│   ├── cosmos.py             # CosmosService        (databases / containers / items / SQL)
+│   ├── fileshare.py          # FileShareService     (shares / directories / files)
+│   ├── servicebus.py         # ServiceBusService    (queues, topics/subs, SQL-filter, sessions)
+│   ├── eventhubs.py          # EventHubsService     (hubs, partitions, consumer groups, events)
+│   ├── eventgrid.py          # EventGridService     (topics, subscriptions, publish/filter)
+│   ├── keyvault.py           # KeyVaultService      (secrets, keys, certificates, soft-delete)
+│   ├── managedidentity.py    # ManagedIdentityService (identities, tokens, roles)
+│   ├── appconfig.py          # AppConfigService     (key-values, labels, feature flags, snapshots)
+│   ├── monitor.py            # MonitorService       (metrics, log workspaces, alert rules)
+│   ├── notificationhubs.py   # NotificationHubsService (registrations, installations, send)
+│   ├── server.py             # one ThreadingHTTPServer exposing all services
+│   ├── cli.py                # `openazure` console entry point
+│   └── __main__.py           # `python -m openazure`
+└── tests/                    # end-to-end pytest suite
 ```
 
 All services share a single `Store` (one SQLite connection), so a single
@@ -121,17 +147,22 @@ service classes can also be imported and called directly with no server.
 
 ## Services
 
-| Service       | Module             | Class                | Primitives | Local path prefix |
-|---------------|--------------------|----------------------|------------|-------------------|
-| Blob          | `blob.py`          | `BlobService`        | containers; blobs (bytes, ETag, Content-MD5); block-blob stage/commit; metadata; tier (Hot/Cool/Archive); server-side copy; SAS token stub; container lease stub | `/blob` |
-| Table         | `table.py`         | `TableService`       | tables; entities keyed by PartitionKey+RowKey; insert/upsert/merge/replace/query; OData-lite `$filter`/`$top`/`$select`; atomic batch transactions | `/table` |
-| Queue         | `queue.py`         | `QueueService`       | queues; messages with visibility timeout + pop receipts; update message (visibility/body); peek; clear | `/queue` |
-| Functions     | `functions.py`     | `FunctionRunner`     | HTTP-trigger; queue-trigger; timer-trigger; blob-trigger; Service Bus trigger — Python handlers with at-least-once delivery | `/functions` |
-| Cosmos DB     | `cosmos.py`        | `CosmosService`      | databases, containers (partition key), items (CRUD, upsert); SQL-subset query (SELECT/WHERE/ORDER BY/OFFSET LIMIT) | `/cosmos` |
-| File Shares   | `fileshare.py`     | `FileShareService`   | shares, directories (hierarchical), files (upload/download/copy/metadata/delete), directory listing | `/files` |
-| Service Bus   | `servicebus.py`    | `ServiceBusService`  | queues + topics/subscriptions; send/receive (peek-lock)/complete/abandon/dead-letter; SQL-filter rules; session-enabled queues; dead-letter sub-queue; auto-dead-letter on max delivery count | `/servicebus` |
-| Event Hubs    | `eventhubs.py`     | `EventHubsService`   | event hubs; configurable partitions; consumer groups ($Default auto-created); send events (single/batch, by partition key or explicit); receive with per-consumer-group checkpoint tracking | `/eventhubs` |
-| Event Grid    | `eventgrid.py`     | `EventGridService`   | custom topics (EventGridSchema + CloudEvents 1.0); event subscriptions with event-type, subject prefix/suffix, and property equality filters; publish with fan-out to matching subscriptions; stored-event inspection | `/eventgrid` |
+| Service              | Module                  | Class                      | Primitives | Local path prefix |
+|----------------------|-------------------------|----------------------------|------------|-------------------|
+| Blob                 | `blob.py`               | `BlobService`              | containers; blobs (bytes, ETag, Content-MD5); block-blob stage/commit; metadata; tier (Hot/Cool/Archive); server-side copy; SAS token stub; container lease stub | `/blob` |
+| Table                | `table.py`              | `TableService`             | tables; entities keyed by PartitionKey+RowKey; insert/upsert/merge/replace/query; OData-lite `$filter`/`$top`/`$select`; atomic batch transactions | `/table` |
+| Queue                | `queue.py`              | `QueueService`             | queues; messages with visibility timeout + pop receipts; update message (visibility/body); peek; clear | `/queue` |
+| Functions            | `functions.py`          | `FunctionRunner`           | HTTP-trigger; queue-trigger; timer-trigger; blob-trigger; Service Bus trigger — Python handlers with at-least-once delivery | `/functions` |
+| Cosmos DB            | `cosmos.py`             | `CosmosService`            | databases, containers (partition key), items (CRUD, upsert); SQL-subset query (SELECT/WHERE/ORDER BY/OFFSET LIMIT) | `/cosmos` |
+| File Shares          | `fileshare.py`          | `FileShareService`         | shares, directories (hierarchical), files (upload/download/copy/metadata/delete), directory listing | `/files` |
+| Service Bus          | `servicebus.py`         | `ServiceBusService`        | queues + topics/subscriptions; send/receive (peek-lock)/complete/abandon/dead-letter; SQL-filter rules; session-enabled queues; dead-letter sub-queue; auto-dead-letter on max delivery count | `/servicebus` |
+| Event Hubs           | `eventhubs.py`          | `EventHubsService`         | event hubs; configurable partitions; consumer groups ($Default auto-created); send events (single/batch, by partition key or explicit); receive with per-consumer-group checkpoint tracking | `/eventhubs` |
+| Event Grid           | `eventgrid.py`          | `EventGridService`         | custom topics (EventGridSchema + CloudEvents 1.0); event subscriptions with event-type, subject prefix/suffix, and property equality filters; publish with fan-out to matching subscriptions; stored-event inspection | `/eventgrid` |
+| Key Vault            | `keyvault.py`           | `KeyVaultService`          | secrets (set/get/list/delete/recover/purge, soft-delete, full version history); keys (RSA/EC/oct; encrypt/decrypt/wrap/unwrap); certificate metadata (create/get/list/delete/recover/purge); soft-delete lifecycle for all three types | `/keyvault` |
+| Managed Identity     | `managedidentity.py`    | `ManagedIdentityService`   | identity register/list/get/delete; HMAC-SHA256 bearer token issue/validate/revoke; role assignment with scope | `/identity` |
+| App Configuration    | `appconfig.py`          | `AppConfigService`         | key-values with labels/tags/content-type/ETags; optimistic concurrency; lock/unlock; revision history; feature flags (create/toggle/list with client-filter conditions); named point-in-time snapshots | `/appconfig` |
+| Azure Monitor        | `monitor.py`            | `MonitorService`           | metric ingestion (single/batch, dimensions, custom timestamp); metric queries (avg/min/max/sum/count, time buckets, dimension filter); log workspaces; log ingestion; SQL-subset log queries; alert rules with threshold evaluation | `/monitor` |
+| Notification Hubs    | `notificationhubs.py`   | `NotificationHubsService`  | hub CRUD; device registrations (create/update/delete/list/tag-filter); installation upsert API; tag-expression targeted send (`&&`/`\|\|`/`!`/parens); platform-scoped send; all sent notifications captured for inspection | `/notificationhubs` |
 
 ## Quickstart
 
@@ -316,17 +347,20 @@ HTTP server (started in-process on an OS-assigned port and driven with
 
 ```
 $ python -m pytest -q
-296 passed
+490 passed
 ```
 
-**296 tests pass** (`tests/test_blob.py`, `tests/test_blob_extended.py`,
+**490 tests pass** (`tests/test_blob.py`, `tests/test_blob_extended.py`,
 `tests/test_table.py`, `tests/test_table_extended.py`, `tests/test_queue.py`,
 `tests/test_queue_extended.py`, `tests/test_functions.py`,
 `tests/test_functions_extended.py`, `tests/test_server.py`,
 `tests/test_server_extended.py`, `tests/test_cosmos.py`,
 `tests/test_fileshare.py`, `tests/test_servicebus.py`,
 `tests/test_eventhubs.py`, `tests/test_eventgrid.py`,
-`tests/test_messaging_server.py`), covering:
+`tests/test_messaging_server.py`, `tests/test_keyvault.py`,
+`tests/test_managedidentity.py`, `tests/test_appconfig.py`,
+`tests/test_monitor.py`, `tests/test_notificationhubs.py`,
+`tests/test_identity_security_server.py`), covering:
 
 - Blob round-trips, Content-MD5, block-blob staging and commit, metadata,
   access tiers (Hot/Cool/Archive), server-side copy, SAS token stubs,
@@ -353,7 +387,28 @@ $ python -m pytest -q
 - Event Grid: topic + subscription CRUD; publish (EventGridSchema and
   CloudEvents 1.0); event-type, subject-prefix, subject-suffix, and property
   equality filters; fan-out to matching subscriptions; stored-event inspection.
-- Full HTTP server for all nine services including PATCH (queue update-message).
+- Key Vault: secrets (set/get/list/delete/recover/purge with soft-delete, full
+  version history); keys (RSA/EC/oct; encrypt/decrypt/wrap/unwrap round-trips);
+  certificate metadata (create/get/list/delete/recover/purge); all soft-delete
+  lifecycle transitions.
+- Managed Identity: identity register/list/get/delete; HMAC-SHA256 bearer
+  token issue and validate; token expiry and revocation; role assignment;
+  multiple independent identities on the same store.
+- App Configuration: key-values with labels and tags; update/delete; optimistic
+  concurrency lock/unlock; full revision history; feature flags (create/toggle/
+  list with client-filter conditions); point-in-time named snapshots.
+- Azure Monitor: metric ingestion (single and batch, with dimensions and custom
+  timestamps); metric aggregation queries (avg/min/max/sum/count, time buckets,
+  dimension filter, time range); log workspace CRUD; log ingestion; SQL-subset
+  log queries (SELECT/WHERE/ORDER BY/LIMIT); alert rules with threshold
+  evaluation; parser unit tests.
+- Notification Hubs: hub CRUD; registration create/update/delete/list with tag
+  filter; installation upsert API; tag-expression targeted send with
+  `&&`/`||`/`!`/parentheses evaluation; platform-scoped send; sent-notification
+  capture and inspection; tag expression evaluator unit tests.
+- Full HTTP server for all fourteen services including PATCH (queue
+  update-message) and end-to-end round-trips through the live server for all
+  new services.
 
 CI runs the same suite on Ubuntu, macOS, and Windows across Python 3.10–3.13.
 
@@ -382,6 +437,20 @@ The following are **not implemented yet** and are tracked as roadmap items
   capture to Blob Storage.
 - Event Grid: system topics (Azure resource events), event domains, partner
   topics, and actual outbound HTTP delivery to subscription endpoints.
+- Key Vault: HSM-backed key types, actual RSA/EC key-pair generation (current
+  cipher is a deterministic test XOR), key rotation policies, managed HSM,
+  certificate policy enforcement, and PKCS#12 export.
+- Managed Identity: OAuth 2.0 / OpenID Connect wire protocol compatibility,
+  federated credentials, workload identity federation, and actual JWT RS256
+  signing.
+- App Configuration: geo-replication, private endpoints, customer-managed
+  key encryption, and KQL-style `$filter` beyond prefix matching.
+- Azure Monitor: KQL (Kusto Query Language) parser, diagnostic settings,
+  action groups with actual outbound alerting, and Log Analytics workspace
+  wire protocol compatibility.
+- Notification Hubs: actual outbound push delivery to APNs/FCM/WNS endpoints,
+  template notifications with property substitution, PNS feedback processing,
+  and per-installation tag management via PATCH.
 
 ## License
 

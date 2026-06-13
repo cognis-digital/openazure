@@ -167,6 +167,11 @@ from .fileshare import FileShareService
 from .servicebus import ServiceBusService
 from .eventhubs import EventHubsService
 from .eventgrid import EventGridService
+from .keyvault import KeyVaultService
+from .managedidentity import ManagedIdentityService, Unauthorized
+from .appconfig import AppConfigService
+from .monitor import MonitorService
+from .notificationhubs import NotificationHubsService
 from .errors import OpenAzureError
 from .store import Store
 
@@ -186,6 +191,11 @@ class OpenAzure:
         self.files = FileShareService(self.store)
         self.eventhubs = EventHubsService(self.store)
         self.eventgrid = EventGridService(self.store)
+        self.keyvault = KeyVaultService(self.store)
+        self.identity = ManagedIdentityService(self.store)
+        self.appconfig = AppConfigService(self.store)
+        self.monitor = MonitorService(self.store)
+        self.notificationhubs = NotificationHubsService(self.store)
 
     def close(self):
         self.store.close()
@@ -258,6 +268,8 @@ def _make_handler(app: OpenAzure):
                             "blob", "table", "queue",
                             "functions", "cosmos", "files",
                             "servicebus", "eventhubs", "eventgrid",
+                            "keyvault", "identity", "appconfig",
+                            "monitor", "notificationhubs",
                         ],
                     })
                     return
@@ -281,6 +293,16 @@ def _make_handler(app: OpenAzure):
                     self._get_eventhubs(segs, qs)
                 elif svc == "eventgrid":
                     self._get_eventgrid(segs, qs)
+                elif svc == "keyvault":
+                    self._get_keyvault(segs, qs)
+                elif svc == "identity":
+                    self._get_identity(segs, qs)
+                elif svc == "appconfig":
+                    self._get_appconfig(segs, qs)
+                elif svc == "monitor":
+                    self._get_monitor(segs, qs)
+                elif svc == "notificationhubs":
+                    self._get_notificationhubs(segs, qs)
                 else:
                     self._send_json({"error": {"code": "NotFound",
                                                "message": "unknown service"}},
@@ -328,6 +350,16 @@ def _make_handler(app: OpenAzure):
                     self._put_eventhubs(segs, qs)
                 elif svc == "eventgrid":
                     self._put_eventgrid(segs, qs)
+                elif svc == "keyvault":
+                    self._put_keyvault(segs, qs)
+                elif svc == "identity":
+                    self._put_identity(segs, qs)
+                elif svc == "appconfig":
+                    self._put_appconfig(segs, qs)
+                elif svc == "monitor":
+                    self._put_monitor(segs, qs)
+                elif svc == "notificationhubs":
+                    self._put_notificationhubs(segs, qs)
                 else:
                     self._send_json({"error": {"code": "NotFound"}}, 404)
             except Exception as e:  # noqa: BLE001
@@ -449,6 +481,16 @@ def _make_handler(app: OpenAzure):
                     self._delete_eventhubs(segs, qs)
                 elif svc == "eventgrid":
                     self._delete_eventgrid(segs, qs)
+                elif svc == "keyvault":
+                    self._delete_keyvault(segs, qs)
+                elif svc == "identity":
+                    self._delete_identity(segs, qs)
+                elif svc == "appconfig":
+                    self._delete_appconfig(segs, qs)
+                elif svc == "monitor":
+                    self._delete_monitor(segs, qs)
+                elif svc == "notificationhubs":
+                    self._delete_notificationhubs(segs, qs)
                 else:
                     self._send_json({"error": {"code": "NotFound"}}, 404)
             except Exception as e:  # noqa: BLE001
@@ -1144,6 +1186,672 @@ def _make_handler(app: OpenAzure):
             else:
                 self._send_json({"error": {"code": "BadRequest"}}, 400)
 
+        # -- Key Vault sub-dispatch -----------------------------------
+        # Path layout:
+        #   /keyvault/<vault>/secrets/<name>[/<version>]
+        #   /keyvault/<vault>/keys/<name>[/<version>]
+        #   /keyvault/<vault>/certificates/<name>[/<version>]
+        # POST  .../<name>?comp=encrypt|decrypt|wrap|unwrap|issue|validate|revoke
+        # PUT   .../<name>   create/set
+        # GET   .../<name>   get
+        # DELETE .../<name>  soft-delete
+        # POST   .../<name>?comp=recover|purge
+
+        def _put_keyvault(self, segs, qs):
+            # PUT /keyvault/<vault>/<type>/<name>
+            if len(segs) < 4:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            vault, obj_type, name = segs[1], segs[2], segs[3]
+            body = self._read_json() if self._has_body() else {}
+            if obj_type == "secrets":
+                res = app.keyvault.set_secret(
+                    vault, name, body.get("value", ""),
+                    content_type=body.get("content_type"),
+                    enabled=body.get("enabled", True),
+                    expires_on=body.get("expires_on"),
+                    tags=body.get("tags"),
+                )
+                self._send_json(res, 201)
+            elif obj_type == "keys":
+                res = app.keyvault.create_key(
+                    vault, name,
+                    key_type=body.get("key_type", "RSA"),
+                    key_size=int(body.get("key_size", 2048)),
+                    key_ops=body.get("key_ops"),
+                    enabled=body.get("enabled", True),
+                    tags=body.get("tags"),
+                )
+                self._send_json(res, 201)
+            elif obj_type == "certificates":
+                res = app.keyvault.create_certificate(
+                    vault, name,
+                    subject=body.get("subject", "CN=example"),
+                    issuer=body.get("issuer", "Self"),
+                    validity_months=int(body.get("validity_months", 12)),
+                    enabled=body.get("enabled", True),
+                    tags=body.get("tags"),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest",
+                                           "message": "unknown object type"}},
+                                400)
+
+        def _get_keyvault(self, segs, qs):
+            # GET /keyvault/<vault>/<type>              list
+            # GET /keyvault/<vault>/<type>/<name>       get latest
+            # GET /keyvault/<vault>/<type>/<name>/<ver> get version
+            # GET /keyvault/<vault>/<type>/<name>?comp=versions  list versions
+            # GET /keyvault/<vault>/deleted/<type>      list deleted
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            vault = segs[1]
+            obj_type = segs[2]
+            comp = qs.get("comp", "")
+
+            if obj_type == "deleted":
+                if len(segs) < 4:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+                    return
+                dtype = segs[3]
+                if dtype == "secrets":
+                    self._send_json({"deleted": app.keyvault.list_deleted_secrets(vault)})
+                elif dtype == "keys":
+                    self._send_json({"deleted": app.keyvault.list_deleted_keys(vault)})
+                elif dtype == "certificates":
+                    self._send_json({"deleted": app.keyvault.list_deleted_certificates(vault)})
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+
+            if len(segs) == 3:
+                # list
+                if obj_type == "secrets":
+                    self._send_json({"secrets": app.keyvault.list_secrets(vault)})
+                elif obj_type == "keys":
+                    self._send_json({"keys": app.keyvault.list_keys(vault)})
+                elif obj_type == "certificates":
+                    self._send_json({"certificates": app.keyvault.list_certificates(vault)})
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            elif len(segs) >= 4:
+                name = segs[3]
+                version = segs[4] if len(segs) >= 5 else None
+                if comp == "versions":
+                    if obj_type == "secrets":
+                        self._send_json({"versions": app.keyvault.list_secret_versions(vault, name)})
+                    elif obj_type == "keys":
+                        self._send_json({"versions": app.keyvault.list_key_versions(vault, name)})
+                    else:
+                        self._send_json({"error": {"code": "BadRequest"}}, 400)
+                elif obj_type == "secrets":
+                    self._send_json(app.keyvault.get_secret(vault, name, version))
+                elif obj_type == "keys":
+                    self._send_json(app.keyvault.get_key(vault, name, version))
+                elif obj_type == "certificates":
+                    self._send_json(app.keyvault.get_certificate(vault, name, version))
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_keyvault(self, segs, qs):
+            # POST /keyvault/<vault>/<type>/<name>?comp=<op>
+            if len(segs) < 4:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            vault, obj_type, name = segs[1], segs[2], segs[3]
+            comp = qs.get("comp", "")
+            body = self._read_json() if self._has_body() else {}
+            version = segs[4] if len(segs) >= 5 else None
+
+            if comp == "recover":
+                if obj_type == "secrets":
+                    self._send_json(app.keyvault.recover_secret(vault, name))
+                elif obj_type == "keys":
+                    self._send_json(app.keyvault.recover_key(vault, name))
+                elif obj_type == "certificates":
+                    self._send_json(app.keyvault.recover_certificate(vault, name))
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            elif comp == "purge":
+                if obj_type == "secrets":
+                    app.keyvault.purge_secret(vault, name)
+                elif obj_type == "keys":
+                    app.keyvault.purge_key(vault, name)
+                elif obj_type == "certificates":
+                    app.keyvault.purge_certificate(vault, name)
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+                self._send_json({"purged": True})
+            elif comp == "encrypt":
+                res = app.keyvault.encrypt(
+                    vault, name, body.get("plaintext", ""),
+                    algorithm=body.get("algorithm", "RSA-OAEP"),
+                    version=version,
+                )
+                self._send_json(res)
+            elif comp == "decrypt":
+                res = app.keyvault.decrypt(
+                    vault, name, body.get("ciphertext", ""),
+                    algorithm=body.get("algorithm", "RSA-OAEP"),
+                    version=version,
+                )
+                self._send_json(res)
+            elif comp == "wrap":
+                res = app.keyvault.wrap_key(
+                    vault, name, body.get("key", ""),
+                    algorithm=body.get("algorithm", "RSA-OAEP"),
+                    version=version,
+                )
+                self._send_json(res)
+            elif comp == "unwrap":
+                res = app.keyvault.unwrap_key(
+                    vault, name, body.get("wrapped_key", ""),
+                    algorithm=body.get("algorithm", "RSA-OAEP"),
+                    version=version,
+                )
+                self._send_json(res)
+            else:
+                self._send_json({"error": {"code": "BadRequest",
+                                           "message": "unknown comp"}}, 400)
+
+        def _delete_keyvault(self, segs, qs):
+            # DELETE /keyvault/<vault>/<type>/<name>   soft-delete
+            if len(segs) < 4:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            vault, obj_type, name = segs[1], segs[2], segs[3]
+            if obj_type == "secrets":
+                self._send_json(app.keyvault.delete_secret(vault, name))
+            elif obj_type == "keys":
+                self._send_json(app.keyvault.delete_key(vault, name))
+            elif obj_type == "certificates":
+                self._send_json(app.keyvault.delete_certificate(vault, name))
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        # -- Managed Identity sub-dispatch ---------------------------
+        # /identity/identities[/<name>]
+        # /identity/identities/<name>/roles
+        # /identity/token?identity=&scope=
+        # /identity/validate   (POST, body={token:...})
+
+        def _put_identity(self, segs, qs):
+            # PUT /identity/identities/<name>             register
+            # PUT /identity/identities/<name>/roles       assign role
+            if len(segs) < 3 or segs[1] != "identities":
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            body = self._read_json() if self._has_body() else {}
+            if len(segs) == 3:
+                res = app.identity.register_identity(
+                    segs[2],
+                    identity_type=body.get("type", "UserAssigned"),
+                    enabled=body.get("enabled", True),
+                    tags=body.get("tags"),
+                )
+                self._send_json(res, 201)
+            elif len(segs) == 4 and segs[3] == "roles":
+                res = app.identity.assign_role(
+                    segs[2],
+                    role=body.get("role", "Contributor"),
+                    scope=body.get("scope", "/"),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _get_identity(self, segs, qs):
+            # GET /identity/identities            list
+            # GET /identity/identities/<name>     get
+            # GET /identity/identities/<name>/roles
+            # GET /identity/token?identity=&scope=
+            if len(segs) < 2:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            sub = segs[1]
+            if sub == "identities":
+                if len(segs) == 2:
+                    self._send_json({"identities": app.identity.list_identities()})
+                elif len(segs) == 3:
+                    self._send_json(app.identity.get_identity(segs[2]))
+                elif len(segs) == 4 and segs[3] == "roles":
+                    self._send_json({"roles": app.identity.list_roles(segs[2])})
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            elif sub == "token":
+                identity_name = qs.get("identity", "")
+                scope = qs.get("scope", "/.default")
+                lifetime = int(qs["lifetime"]) if "lifetime" in qs else None
+                if not identity_name:
+                    self._send_json({"error": {"code": "BadRequest",
+                                               "message": "identity parameter required"}},
+                                    400)
+                    return
+                self._send_json(app.identity.issue_token(
+                    identity_name, scope, lifetime=lifetime
+                ))
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_identity(self, segs, qs):
+            # POST /identity/validate    validate a bearer token
+            # POST /identity/revoke      revoke a token by jti
+            if len(segs) < 2:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            sub = segs[1]
+            body = self._read_json() if self._has_body() else {}
+            if sub == "validate":
+                token = body.get("token", "")
+                try:
+                    claims = app.identity.validate_token(token)
+                    self._send_json({"valid": True, "claims": claims})
+                except Unauthorized as e:
+                    self._send_json({"valid": False, "error": e.message}, 401)
+            elif sub == "revoke":
+                app.identity.revoke_token(body.get("jti", ""))
+                self._send_json({"revoked": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _delete_identity(self, segs, qs):
+            # DELETE /identity/identities/<name>
+            # DELETE /identity/identities/<name>/roles  (body={role,scope})
+            if len(segs) < 3 or segs[1] != "identities":
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            if len(segs) == 3:
+                app.identity.delete_identity(segs[2])
+                self._send_json({"deleted": True})
+            elif len(segs) == 4 and segs[3] == "roles":
+                body = self._read_json() if self._has_body() else {}
+                app.identity.remove_role(
+                    segs[2],
+                    role=body.get("role", ""),
+                    scope=body.get("scope", "/"),
+                )
+                self._send_json({"deleted": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        # -- App Configuration sub-dispatch --------------------------
+        # /appconfig/<store>/kv/<key>[?label=]
+        # /appconfig/<store>/kv?[key_filter=][&label_filter=][&top=]
+        # /appconfig/<store>/kv/<key>?comp=lock|unlock|versions
+        # /appconfig/<store>/featureflags/<name>[?label=]
+        # /appconfig/<store>/snapshots/<snap>
+
+        def _put_appconfig(self, segs, qs):
+            if len(segs) < 4:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            ac_store, obj_type = segs[1], segs[2]
+            body = self._read_json() if self._has_body() else {}
+            label = qs.get("label", body.get("label", ""))
+            comp = qs.get("comp", "")
+            if obj_type == "kv":
+                key = "/".join(segs[3:])
+                if comp == "lock":
+                    self._send_json(app.appconfig.lock_keyvalue(ac_store, key, label))
+                elif comp == "unlock":
+                    self._send_json(app.appconfig.unlock_keyvalue(ac_store, key, label))
+                else:
+                    res = app.appconfig.set_keyvalue(
+                        ac_store, key,
+                        value=body.get("value"),
+                        label=label,
+                        content_type=body.get("content_type"),
+                        tags=body.get("tags"),
+                        etag_match=qs.get("if_match"),
+                    )
+                    self._send_json(res, 200)
+            elif obj_type == "featureflags":
+                name = segs[3]
+                res = app.appconfig.set_feature_flag(
+                    ac_store, name,
+                    enabled=body.get("enabled", False),
+                    description=body.get("description", ""),
+                    conditions=body.get("conditions"),
+                    label=label,
+                )
+                self._send_json(res, 200)
+            elif obj_type == "snapshots":
+                name = segs[3]
+                res = app.appconfig.create_snapshot(
+                    ac_store, name,
+                    key_filter=body.get("key_filter"),
+                    label_filter=body.get("label_filter"),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _get_appconfig(self, segs, qs):
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            ac_store, obj_type = segs[1], segs[2]
+            label = qs.get("label", "")
+            comp = qs.get("comp", "")
+            if obj_type == "kv":
+                if len(segs) == 3:
+                    # list
+                    results = app.appconfig.list_keyvalues(
+                        ac_store,
+                        key_filter=qs.get("key"),
+                        label_filter=qs.get("label") if "label" in qs else None,
+                        top=int(qs["top"]) if "top" in qs else None,
+                    )
+                    self._send_json({"items": results})
+                else:
+                    key = "/".join(segs[3:])
+                    if comp == "versions":
+                        self._send_json({"revisions": app.appconfig.list_revisions(
+                            ac_store, key, label
+                        )})
+                    else:
+                        self._send_json(app.appconfig.get_keyvalue(ac_store, key, label))
+            elif obj_type == "featureflags":
+                if len(segs) == 3:
+                    self._send_json({"flags": app.appconfig.list_feature_flags(
+                        ac_store, label or None
+                    )})
+                else:
+                    name = segs[3]
+                    self._send_json(app.appconfig.get_feature_flag(ac_store, name, label))
+            elif obj_type == "snapshots":
+                if len(segs) == 3:
+                    self._send_json({"snapshots": app.appconfig.list_snapshots(ac_store)})
+                else:
+                    name = segs[3]
+                    self._send_json(app.appconfig.get_snapshot(ac_store, name))
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_appconfig(self, segs, qs):
+            # POST /appconfig/<store>/featureflags/<name>?comp=toggle
+            if len(segs) < 4:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            ac_store, obj_type = segs[1], segs[2]
+            body = self._read_json() if self._has_body() else {}
+            label = qs.get("label", "")
+            comp = qs.get("comp", "")
+            if obj_type == "featureflags" and comp == "toggle":
+                name = segs[3]
+                res = app.appconfig.toggle_feature_flag(
+                    ac_store, name,
+                    enabled=bool(body.get("enabled", False)),
+                    label=label,
+                )
+                self._send_json(res)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _delete_appconfig(self, segs, qs):
+            if len(segs) < 4:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            ac_store, obj_type = segs[1], segs[2]
+            label = qs.get("label", "")
+            if obj_type == "kv":
+                key = "/".join(segs[3:])
+                app.appconfig.delete_keyvalue(ac_store, key, label)
+                self._send_json({"deleted": True})
+            elif obj_type == "featureflags":
+                key = f".appconfig.featureflag/{segs[3]}"
+                app.appconfig.delete_keyvalue(ac_store, key, label)
+                self._send_json({"deleted": True})
+            elif obj_type == "snapshots":
+                app.appconfig.delete_snapshot(ac_store, segs[3])
+                self._send_json({"deleted": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        # -- Azure Monitor sub-dispatch ------------------------------
+        # /monitor/metrics/<namespace>/<name>   GET query, POST ingest
+        # /monitor/metrics                      GET list
+        # /monitor/workspaces[/<name>]
+        # /monitor/workspaces/<name>/logs/<table>   POST ingest
+        # /monitor/workspaces/<name>/query          POST query
+        # /monitor/alerts[/<name>]
+        # /monitor/alerts/<name>?comp=evaluate
+
+        def _put_monitor(self, segs, qs):
+            # PUT /monitor/workspaces/<name>       create workspace
+            # PUT /monitor/alerts/<name>           create alert rule
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            sub = segs[1]
+            body = self._read_json() if self._has_body() else {}
+            if sub == "workspaces" and len(segs) == 3:
+                self._send_json(app.monitor.create_workspace(segs[2]), 201)
+            elif sub == "alerts" and len(segs) == 3:
+                res = app.monitor.create_alert_rule(
+                    segs[2],
+                    namespace=body.get("namespace", ""),
+                    metric=body.get("metric", ""),
+                    operator=body.get("operator", "gt"),
+                    threshold=float(body.get("threshold", 0)),
+                    window_seconds=int(body.get("window_seconds", 300)),
+                    severity=int(body.get("severity", 3)),
+                    enabled=body.get("enabled", True),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _get_monitor(self, segs, qs):
+            if len(segs) < 2:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            sub = segs[1]
+            if sub == "metrics":
+                if len(segs) == 2:
+                    ns = qs.get("namespace")
+                    self._send_json({"metrics": app.monitor.list_metrics(ns)})
+                elif len(segs) == 4:
+                    namespace, name = segs[2], segs[3]
+                    start = float(qs["start"]) if "start" in qs else None
+                    end = float(qs["end"]) if "end" in qs else None
+                    agg = qs.get("aggregation", "avg")
+                    interval = int(qs.get("interval", 60))
+                    res = app.monitor.query_metrics(
+                        namespace, name,
+                        start_time=start, end_time=end,
+                        aggregation=agg,
+                        interval_seconds=interval,
+                    )
+                    self._send_json(res)
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            elif sub == "workspaces":
+                if len(segs) == 2:
+                    self._send_json({"workspaces": app.monitor.list_workspaces()})
+                elif len(segs) == 3:
+                    self._send_json(app.monitor.get_workspace(segs[2]))
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            elif sub == "alerts":
+                if len(segs) == 2:
+                    self._send_json({"rules": app.monitor.list_alert_rules()})
+                elif len(segs) == 3:
+                    if qs.get("comp") == "evaluate":
+                        self._send_json(app.monitor.evaluate_alert_rule(segs[2]))
+                    else:
+                        self._send_json(app.monitor.get_alert_rule(segs[2]))
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_monitor(self, segs, qs):
+            # POST /monitor/metrics/<namespace>              ingest batch
+            # POST /monitor/metrics/<namespace>/<name>       ingest single
+            # POST /monitor/workspaces/<name>/logs/<table>   ingest logs
+            # POST /monitor/workspaces/<name>/query          query logs
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            sub = segs[1]
+            body = self._read_json() if self._has_body() else {}
+            if sub == "metrics":
+                namespace = segs[2]
+                if len(segs) == 3:
+                    records = body if isinstance(body, list) else [body]
+                    res = app.monitor.ingest_metrics_batch(namespace, records)
+                    self._send_json({"ingested": len(res)}, 201)
+                elif len(segs) == 4:
+                    res = app.monitor.ingest_metric(
+                        namespace, segs[3],
+                        float(body.get("value", 0)),
+                        timestamp=body.get("timestamp"),
+                        dimensions=body.get("dimensions"),
+                    )
+                    self._send_json(res, 201)
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            elif sub == "workspaces":
+                if len(segs) == 5 and segs[3] == "logs":
+                    records = body if isinstance(body, list) else [body]
+                    res = app.monitor.ingest_logs(segs[2], segs[4], records)
+                    self._send_json(res, 201)
+                elif len(segs) == 4 and segs[3] == "query":
+                    q_str = body.get("query", "SELECT * FROM logs")
+                    start = body.get("start_time")
+                    end = body.get("end_time")
+                    lim = int(body.get("limit", 500))
+                    res = app.monitor.query_logs(
+                        segs[2], q_str,
+                        start_time=start, end_time=end, limit=lim,
+                    )
+                    self._send_json(res)
+                else:
+                    self._send_json({"error": {"code": "BadRequest"}}, 400)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _delete_monitor(self, segs, qs):
+            # DELETE /monitor/workspaces/<name>
+            # DELETE /monitor/alerts/<name>
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            sub = segs[1]
+            if sub == "workspaces" and len(segs) == 3:
+                app.monitor.delete_workspace(segs[2])
+                self._send_json({"deleted": True})
+            elif sub == "alerts" and len(segs) == 3:
+                app.monitor.delete_alert_rule(segs[2])
+                self._send_json({"deleted": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        # -- Notification Hubs sub-dispatch --------------------------
+        # /notificationhubs/<hub>
+        # /notificationhubs/<hub>/registrations[/<reg_id>]
+        # /notificationhubs/<hub>/installations/<inst_id>
+        # /notificationhubs/<hub>/send              POST
+        # /notificationhubs/<hub>/notifications     GET list sent
+
+        def _put_notificationhubs(self, segs, qs):
+            if len(segs) == 2:
+                res = app.notificationhubs.create_hub(segs[1])
+                self._send_json(res, 201)
+            elif len(segs) == 4 and segs[2] == "registrations":
+                body = self._read_json() if self._has_body() else {}
+                res = app.notificationhubs.update_registration(
+                    segs[1], segs[3],
+                    handle=body.get("handle"),
+                    tags=body.get("tags"),
+                    expires_at=body.get("expires_at"),
+                )
+                self._send_json(res)
+            elif len(segs) == 4 and segs[2] == "installations":
+                body = self._read_json() if self._has_body() else {}
+                res = app.notificationhubs.upsert_installation(
+                    segs[1], segs[3],
+                    handle=body.get("handle", ""),
+                    platform=body.get("platform", "gcm"),
+                    tags=body.get("tags"),
+                    templates=body.get("templates"),
+                )
+                self._send_json(res, 200)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _get_notificationhubs(self, segs, qs):
+            if len(segs) == 1:
+                self._send_json({"hubs": app.notificationhubs.list_hubs()})
+            elif len(segs) == 2:
+                hub = segs[1]
+                app.notificationhubs._req_hub(hub)
+                self._send_json({"hub": hub})
+            elif len(segs) == 3 and segs[2] == "registrations":
+                tag = qs.get("tag")
+                top = int(qs.get("top", 100))
+                self._send_json({"registrations": app.notificationhubs.list_registrations(
+                    segs[1], tag_filter=tag, top=top
+                )})
+            elif len(segs) == 4 and segs[2] == "registrations":
+                self._send_json(app.notificationhubs.get_registration(segs[1], segs[3]))
+            elif len(segs) == 4 and segs[2] == "installations":
+                self._send_json(app.notificationhubs.get_installation(segs[1], segs[3]))
+            elif len(segs) == 3 and segs[2] == "notifications":
+                limit = int(qs.get("limit", 100))
+                self._send_json({"notifications": app.notificationhubs.list_sent_notifications(
+                    segs[1], limit=limit
+                )})
+            elif len(segs) == 4 and segs[2] == "notifications":
+                self._send_json(app.notificationhubs.get_sent_notification(segs[1], segs[3]))
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_notificationhubs(self, segs, qs):
+            # POST /notificationhubs/<hub>/registrations       create registration
+            # POST /notificationhubs/<hub>/send                send notification
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            body = self._read_json() if self._has_body() else {}
+            if segs[2] == "registrations" and len(segs) == 3:
+                res = app.notificationhubs.create_registration(
+                    segs[1],
+                    handle=body.get("handle", ""),
+                    platform=body.get("platform", "gcm"),
+                    tags=body.get("tags"),
+                    expires_at=body.get("expires_at"),
+                )
+                self._send_json(res, 201)
+            elif segs[2] == "send" and len(segs) == 3:
+                res = app.notificationhubs.send_notification(
+                    segs[1],
+                    payload=body.get("payload", body),
+                    tag_expression=body.get("tag_expression"),
+                    platform=body.get("platform"),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _delete_notificationhubs(self, segs, qs):
+            if len(segs) == 2:
+                app.notificationhubs.delete_hub(segs[1])
+                self._send_json({"deleted": True})
+            elif len(segs) == 4 and segs[2] == "registrations":
+                app.notificationhubs.delete_registration(segs[1], segs[3])
+                self._send_json({"deleted": True})
+            elif len(segs) == 4 and segs[2] == "installations":
+                app.notificationhubs.delete_installation(segs[1], segs[3])
+                self._send_json({"deleted": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
         # Override do_POST to handle block staging
         _orig_post = do_POST
 
@@ -1227,6 +1935,16 @@ def _make_handler(app: OpenAzure):
                 self_h._post_eventhubs(segs, qs)
             elif svc == "eventgrid":
                 self_h._post_eventgrid(segs, qs)
+            elif svc == "keyvault":
+                self_h._post_keyvault(segs, qs)
+            elif svc == "identity":
+                self_h._post_identity(segs, qs)
+            elif svc == "appconfig":
+                self_h._post_appconfig(segs, qs)
+            elif svc == "monitor":
+                self_h._post_monitor(segs, qs)
+            elif svc == "notificationhubs":
+                self_h._post_notificationhubs(segs, qs)
             else:
                 self_h._send_json({"error": {"code": "NotFound"}}, 404)
         except Exception as e:  # noqa: BLE001
