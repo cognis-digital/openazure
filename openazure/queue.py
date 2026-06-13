@@ -167,3 +167,47 @@ class QueueService:
             "SELECT COUNT(*) AS c FROM messages WHERE queue=?", (queue,)
         )
         return rows[0]["c"]
+
+    def update_message(self, queue: str, message_id: str, pop_receipt: str,
+                       *,
+                       visibility_timeout: float | None = None,
+                       body: str | None = None) -> dict:
+        """Update a dequeued message's visibility timeout and/or body.
+
+        Returns the new ``pop_receipt`` (the old one is invalidated).
+        Mirrors the Azure ``Update Message`` operation.
+        """
+        self._require_queue(queue)
+        rows = self.store.query(
+            "SELECT * FROM messages WHERE id=? AND queue=?",
+            (message_id, queue),
+        )
+        if not rows:
+            raise NotFound(f"message '{message_id}' not found")
+        if rows[0]["pop_receipt"] != pop_receipt:
+            raise BadRequest(
+                "pop_receipt mismatch (message visibility may have expired)"
+            )
+        new_receipt = uuid.uuid4().hex
+        now = _now()
+        if visibility_timeout is not None:
+            new_visible = now + max(0.0, float(visibility_timeout))
+        else:
+            # Keep the current visible_after unchanged relative to now
+            new_visible = rows[0]["visible_after"]
+        sql_parts = ["visible_after=?", "pop_receipt=?"]
+        params: list = [new_visible, new_receipt]
+        if body is not None:
+            sql_parts.append("body=?")
+            params.append(body)
+        params += [message_id, queue]
+        self.store.execute(
+            f"UPDATE messages SET {', '.join(sql_parts)} WHERE id=? AND queue=?",
+            tuple(params),
+        )
+        return {
+            "id": message_id,
+            "queue": queue,
+            "pop_receipt": new_receipt,
+            "visible_after": new_visible,
+        }

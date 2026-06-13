@@ -42,7 +42,7 @@ serverless stack. Instead of creating a real cloud account, paying for usage,
 and needing an internet connection, you start `openazure` locally and talk to
 it exactly like you would talk to the real services.
 
-It gives a developer six things:
+It gives a developer nine things:
 
 - **Blob Storage** — store and fetch files ("blobs") grouped into containers;
   block-blob staging and commit, metadata, access tiers, server-side copy,
@@ -52,14 +52,27 @@ It gives a developer six things:
   and atomic batch transactions.
 - **Queue Storage** — push messages onto a queue and pull them off later, with
   a visibility timeout so a message you are working on isn't handed to anyone
-  else until you finish (or time out).
+  else until you finish (or time out); update message visibility/body in place.
 - **Functions runner** — register small Python handlers that run on an HTTP
-  request or when a queue message arrives, the way Azure Functions do.
+  request, when a queue message arrives, on a timer, when a blob is written,
+  or when a Service Bus message arrives — the way Azure Functions triggers work.
 - **Cosmos DB** — databases, containers with a partition key, and items; full
   CRUD plus a SQL-subset query engine (`SELECT`/`WHERE`/`ORDER BY`/
   `OFFSET … LIMIT`).
 - **File Shares** — shares, directories (hierarchical), and files; upload,
   download, metadata, server-side copy, and directory listing.
+- **Service Bus** — queues and topics/subscriptions; send, receive (peek-lock),
+  complete, abandon, dead-letter; SQL-filter rules on subscriptions;
+  session-enabled queues with session-scoped receive; dead-letter sub-queue
+  and auto-dead-letter on max delivery count exceeded.
+- **Event Hubs** — event hubs with configurable partitions; consumer groups
+  ($Default created automatically); send single events or batches (by partition
+  key or explicit partition); receive events per-partition per-consumer-group
+  with checkpoint tracking.
+- **Event Grid** — custom topics with EventGridSchema or CloudEvents 1.0;
+  event subscriptions with event-type, subject prefix/suffix, and property
+  equality filters; publish events with fan-out to matching subscriptions;
+  stored-event inspection for testing.
 
 **Who is it for?** Developers who want to build and test code that uses Azure
 storage/functions **without touching the cloud** — for fast unit tests,
@@ -86,12 +99,15 @@ openazure/
 │   ├── __init__.py        # package exports + version
 │   ├── store.py           # shared sqlite3 backend (disk or :memory:)
 │   ├── errors.py          # typed errors -> HTTP status + Azure-style codes
-│   ├── blob.py            # BlobService    (containers / blobs / blocks / metadata)
-│   ├── table.py           # TableService   (entities, OData-lite query, batch)
-│   ├── queue.py           # QueueService   (visibility-timeout messages)
-│   ├── functions.py       # FunctionRunner (http + queue triggers)
-│   ├── cosmos.py          # CosmosService  (databases / containers / items / SQL)
-│   ├── fileshare.py       # FileShareService (shares / directories / files)
+│   ├── blob.py            # BlobService       (containers / blobs / blocks / metadata)
+│   ├── table.py           # TableService      (entities, OData-lite query, batch)
+│   ├── queue.py           # QueueService      (visibility-timeout messages, update)
+│   ├── functions.py       # FunctionRunner    (http/queue/timer/blob/servicebus triggers)
+│   ├── cosmos.py          # CosmosService     (databases / containers / items / SQL)
+│   ├── fileshare.py       # FileShareService  (shares / directories / files)
+│   ├── servicebus.py      # ServiceBusService (queues, topics/subs, SQL-filter, sessions)
+│   ├── eventhubs.py       # EventHubsService  (hubs, partitions, consumer groups, events)
+│   ├── eventgrid.py       # EventGridService  (topics, subscriptions, publish/filter)
 │   ├── server.py          # one ThreadingHTTPServer exposing all services
 │   ├── cli.py             # `openazure` console entry point
 │   └── __main__.py        # `python -m openazure`
@@ -105,14 +121,17 @@ service classes can also be imported and called directly with no server.
 
 ## Services
 
-| Service      | Module           | Class              | Primitives | Local path prefix |
-|--------------|------------------|--------------------|------------|-------------------|
-| Blob         | `blob.py`        | `BlobService`      | containers; blobs (bytes, ETag, Content-MD5); block-blob stage/commit; metadata; tier (Hot/Cool/Archive); server-side copy; SAS token stub; container lease stub | `/blob` |
-| Table        | `table.py`       | `TableService`     | tables; entities keyed by PartitionKey+RowKey; insert/upsert/merge/replace/query; OData-lite `$filter`/`$top`/`$select`; atomic batch transactions | `/table` |
-| Queue        | `queue.py`       | `QueueService`     | queues, messages with visibility timeout + pop receipts | `/queue` |
-| Functions    | `functions.py`   | `FunctionRunner`   | HTTP-trigger + queue-trigger Python handlers | `/functions` |
-| Cosmos DB    | `cosmos.py`      | `CosmosService`    | databases, containers (partition key), items (CRUD, upsert); SQL-subset query (SELECT/WHERE/ORDER BY/OFFSET LIMIT) | `/cosmos` |
-| File Shares  | `fileshare.py`   | `FileShareService` | shares, directories (hierarchical), files (upload/download/copy/metadata/delete), directory listing | `/files` |
+| Service       | Module             | Class                | Primitives | Local path prefix |
+|---------------|--------------------|----------------------|------------|-------------------|
+| Blob          | `blob.py`          | `BlobService`        | containers; blobs (bytes, ETag, Content-MD5); block-blob stage/commit; metadata; tier (Hot/Cool/Archive); server-side copy; SAS token stub; container lease stub | `/blob` |
+| Table         | `table.py`         | `TableService`       | tables; entities keyed by PartitionKey+RowKey; insert/upsert/merge/replace/query; OData-lite `$filter`/`$top`/`$select`; atomic batch transactions | `/table` |
+| Queue         | `queue.py`         | `QueueService`       | queues; messages with visibility timeout + pop receipts; update message (visibility/body); peek; clear | `/queue` |
+| Functions     | `functions.py`     | `FunctionRunner`     | HTTP-trigger; queue-trigger; timer-trigger; blob-trigger; Service Bus trigger — Python handlers with at-least-once delivery | `/functions` |
+| Cosmos DB     | `cosmos.py`        | `CosmosService`      | databases, containers (partition key), items (CRUD, upsert); SQL-subset query (SELECT/WHERE/ORDER BY/OFFSET LIMIT) | `/cosmos` |
+| File Shares   | `fileshare.py`     | `FileShareService`   | shares, directories (hierarchical), files (upload/download/copy/metadata/delete), directory listing | `/files` |
+| Service Bus   | `servicebus.py`    | `ServiceBusService`  | queues + topics/subscriptions; send/receive (peek-lock)/complete/abandon/dead-letter; SQL-filter rules; session-enabled queues; dead-letter sub-queue; auto-dead-letter on max delivery count | `/servicebus` |
+| Event Hubs    | `eventhubs.py`     | `EventHubsService`   | event hubs; configurable partitions; consumer groups ($Default auto-created); send events (single/batch, by partition key or explicit); receive with per-consumer-group checkpoint tracking | `/eventhubs` |
+| Event Grid    | `eventgrid.py`     | `EventGridService`   | custom topics (EventGridSchema + CloudEvents 1.0); event subscriptions with event-type, subject prefix/suffix, and property equality filters; publish with fan-out to matching subscriptions; stored-event inspection | `/eventgrid` |
 
 ## Quickstart
 
@@ -297,13 +316,17 @@ HTTP server (started in-process on an OS-assigned port and driven with
 
 ```
 $ python -m pytest -q
-170 passed
+296 passed
 ```
 
-**170 tests pass** (`tests/test_blob.py`, `tests/test_blob_extended.py`,
+**296 tests pass** (`tests/test_blob.py`, `tests/test_blob_extended.py`,
 `tests/test_table.py`, `tests/test_table_extended.py`, `tests/test_queue.py`,
-`tests/test_functions.py`, `tests/test_server.py`, `tests/test_server_extended.py`,
-`tests/test_cosmos.py`, `tests/test_fileshare.py`), covering:
+`tests/test_queue_extended.py`, `tests/test_functions.py`,
+`tests/test_functions_extended.py`, `tests/test_server.py`,
+`tests/test_server_extended.py`, `tests/test_cosmos.py`,
+`tests/test_fileshare.py`, `tests/test_servicebus.py`,
+`tests/test_eventhubs.py`, `tests/test_eventgrid.py`,
+`tests/test_messaging_server.py`), covering:
 
 - Blob round-trips, Content-MD5, block-blob staging and commit, metadata,
   access tiers (Hot/Cool/Archive), server-side copy, SAS token stubs,
@@ -311,14 +334,26 @@ $ python -m pytest -q
 - Table insert/upsert/merge/replace/query, OData-lite `$filter` (eq/ne/gt/lt/
   ge/le/and, string/number/bool values), `$top`, `$select`, atomic batch
   transactions with rollback on failure.
-- Queue visibility-timeout redelivery and pop-receipt deletion.
-- Function HTTP and queue triggers (including at-least-once behavior on handler
-  failure).
+- Queue visibility-timeout redelivery, pop-receipt deletion, and
+  update-message (change visibility timeout or body while a message is in flight).
+- Function HTTP, queue, timer, blob, and Service Bus triggers (including
+  at-least-once behavior on handler failure).
 - Cosmos DB: databases, containers, items (CRUD + upsert), partition key
   scoping, SQL-subset queries (SELECT/WHERE/ORDER BY/OFFSET LIMIT).
 - File Shares: shares, directories (hierarchical, empty-check enforcement),
   files (upload/download/copy/metadata/delete), directory listing.
-- Full HTTP server for all six services.
+- Service Bus: queue and topic/subscription CRUD; send/receive (peek-lock);
+  complete/abandon/dead-letter; SQL-filter rules (comparison operators,
+  AND/OR/NOT, string/number/boolean literals, user-property lookup);
+  session-enabled queues; dead-letter sub-queue; auto-dead-letter on
+  max-delivery-count exceeded.
+- Event Hubs: hub + partition + consumer group CRUD; send single events and
+  batches (by partition key or explicit partition); receive with per-consumer-
+  group checkpoint tracking; multiple independent consumer groups.
+- Event Grid: topic + subscription CRUD; publish (EventGridSchema and
+  CloudEvents 1.0); event-type, subject-prefix, subject-suffix, and property
+  equality filters; fan-out to matching subscriptions; stored-event inspection.
+- Full HTTP server for all nine services including PATCH (queue update-message).
 
 CI runs the same suite on Ubuntu, macOS, and Windows across Python 3.10–3.13.
 
@@ -332,14 +367,21 @@ The following are **not implemented yet** and are tracked as roadmap items
 - Shared Access Signatures (SAS) with actual enforcement (current stub
   generates signed URLs but does not validate them on GET/PUT).
 - Blob snapshots, page blobs, and append blobs.
-- Full OData `$filter` language (nested parens, `or`, `not`, `startswith`,
-  `contains`; current subset supports `and`, six comparison operators,
+- Full OData `$filter` language (nested parens, `startswith`, `contains`;
+  current subset supports `and`/`or`/`not`, six comparison operators,
   string/number/bool literals).
 - Cosmos DB stored procedures, triggers, change feed, and cross-partition
   aggregation queries.
 - File Share SMB/NFS protocol access (current API is HTTP-only).
-- Timer-trigger and blob-trigger functions; a persistent function scheduler.
-- Service Bus and Event Hubs emulation.
+- A persistent function scheduler (current timer-trigger must be fired manually
+  via `FunctionRunner.fire_timer`; no background cron loop).
+- Service Bus: message deferral (state=`deferred`), scheduled messages
+  (`enqueue_time_utc`), message sessions across topic subscriptions, and
+  forwarding.
+- Event Hubs: schema registry, Kafka surface, AMQP wire protocol, and
+  capture to Blob Storage.
+- Event Grid: system topics (Azure resource events), event domains, partner
+  topics, and actual outbound HTTP delivery to subscription endpoints.
 
 ## License
 

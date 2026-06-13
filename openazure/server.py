@@ -44,8 +44,10 @@ Path layout (all under the server root):
     * ``DELETE /queue/<queue>``                       delete queue
     * ``GET    /queue``                               list queues
     * ``POST   /queue/<queue>/messages``              enqueue (JSON {body})
-    * ``GET    /queue/<queue>/messages?num=&vt=``     dequeue
+    * ``GET    /queue/<queue>/messages?num=&vt=``     dequeue (or peek=true)
     * ``DELETE /queue/<queue>/messages/<id>?pop=``    delete message
+    * ``PATCH  /queue/<queue>/messages/<id>?pop=&vt=``
+                                                      update message visibility/body
 * Functions:
     * ``GET  /functions``                             list functions
     * ``POST /functions/<name>``                      invoke http function
@@ -78,6 +80,72 @@ Path layout (all under the server root):
     * ``PUT    /files/<share>/<path>?comp=metadata``  set file metadata (JSON)
     * ``PUT    /files/<share>/<path>?comp=copy&src_share=&src_path=``
                                                       server-side file copy
+* Service Bus:
+    * ``PUT    /servicebus/queues/<queue>``           create queue (JSON props)
+    * ``DELETE /servicebus/queues/<queue>``           delete queue
+    * ``GET    /servicebus/queues``                   list queues
+    * ``GET    /servicebus/queues/<queue>``           queue properties
+    * ``POST   /servicebus/queues/<queue>/messages``  send message (JSON {body,...})
+    * ``GET    /servicebus/queues/<queue>/messages?num=&lock=``
+                                                      receive messages (peek-lock)
+    * ``DELETE /servicebus/queues/<queue>/messages?lock=``
+                                                      complete message
+    * ``POST   /servicebus/queues/<queue>/messages?comp=abandon&lock=``
+                                                      abandon message
+    * ``POST   /servicebus/queues/<queue>/messages?comp=deadletter&lock=``
+                                                      dead-letter message
+    * ``GET    /servicebus/queues/<queue>/deadletter?num=``
+                                                      peek dead-letter sub-queue
+    * ``PUT    /servicebus/topics/<topic>``           create topic
+    * ``DELETE /servicebus/topics/<topic>``           delete topic
+    * ``GET    /servicebus/topics``                   list topics
+    * ``PUT    /servicebus/topics/<topic>/subscriptions/<sub>``
+                                                      create subscription
+    * ``DELETE /servicebus/topics/<topic>/subscriptions/<sub>``
+                                                      delete subscription
+    * ``GET    /servicebus/topics/<topic>/subscriptions``
+                                                      list subscriptions
+    * ``POST   /servicebus/topics/<topic>/messages``  publish to topic
+    * ``GET    /servicebus/topics/<topic>/subscriptions/<sub>/messages``
+                                                      receive from subscription
+    * ``PUT    /servicebus/topics/<topic>/subscriptions/<sub>/rules/<rule>``
+                                                      add SQL-filter rule
+    * ``DELETE /servicebus/topics/<topic>/subscriptions/<sub>/rules/<rule>``
+                                                      remove rule
+    * ``GET    /servicebus/topics/<topic>/subscriptions/<sub>/rules``
+                                                      list rules
+* Event Hubs:
+    * ``PUT    /eventhubs/<hub>``                     create hub (JSON {partition_count})
+    * ``DELETE /eventhubs/<hub>``                     delete hub
+    * ``GET    /eventhubs``                           list hubs
+    * ``GET    /eventhubs/<hub>``                     hub properties
+    * ``GET    /eventhubs/<hub>/partitions``          list partitions
+    * ``GET    /eventhubs/<hub>/partitions/<p>``      partition properties
+    * ``PUT    /eventhubs/<hub>/consumergroups/<cg>`` create consumer group
+    * ``DELETE /eventhubs/<hub>/consumergroups/<cg>`` delete consumer group
+    * ``GET    /eventhubs/<hub>/consumergroups``      list consumer groups
+    * ``POST   /eventhubs/<hub>/events``              send event(s) (JSON {body,...} or list)
+    * ``GET    /eventhubs/<hub>/partitions/<p>/events?cg=&num=&from_seq=``
+                                                      receive events
+    * ``GET    /eventhubs/<hub>/partitions/<p>/checkpoint?cg=``
+                                                      get checkpoint
+    * ``PUT    /eventhubs/<hub>/partitions/<p>/checkpoint``
+                                                      update checkpoint (JSON {cg,seq,offset})
+* Event Grid:
+    * ``PUT    /eventgrid/topics/<topic>``            create topic
+    * ``DELETE /eventgrid/topics/<topic>``            delete topic
+    * ``GET    /eventgrid/topics``                    list topics
+    * ``GET    /eventgrid/topics/<topic>``            topic properties
+    * ``POST   /eventgrid/topics/<topic>/events``     publish events (JSON list)
+    * ``GET    /eventgrid/topics/<topic>/events``     list stored events [?sub=&type=&limit=]
+    * ``PUT    /eventgrid/topics/<topic>/subscriptions/<sub>``
+                                                      create subscription (JSON props)
+    * ``DELETE /eventgrid/topics/<topic>/subscriptions/<sub>``
+                                                      delete subscription
+    * ``GET    /eventgrid/topics/<topic>/subscriptions``
+                                                      list subscriptions
+    * ``GET    /eventgrid/topics/<topic>/subscriptions/<sub>``
+                                                      get subscription
 
 The handler maps these onto the service classes; all share one
 :class:`~openazure.store.Store`.
@@ -96,6 +164,9 @@ from .queue import QueueService
 from .functions import FunctionRunner
 from .cosmos import CosmosService
 from .fileshare import FileShareService
+from .servicebus import ServiceBusService
+from .eventhubs import EventHubsService
+from .eventgrid import EventGridService
 from .errors import OpenAzureError
 from .store import Store
 
@@ -108,9 +179,13 @@ class OpenAzure:
         self.blob = BlobService(self.store)
         self.table = TableService(self.store)
         self.queue = QueueService(self.store)
-        self.functions = FunctionRunner(self.queue)
+        self.servicebus = ServiceBusService(self.store)
+        self.functions = FunctionRunner(self.queue,
+                                        service_bus_service=self.servicebus)
         self.cosmos = CosmosService(self.store)
         self.files = FileShareService(self.store)
+        self.eventhubs = EventHubsService(self.store)
+        self.eventgrid = EventGridService(self.store)
 
     def close(self):
         self.store.close()
@@ -182,6 +257,7 @@ def _make_handler(app: OpenAzure):
                         "services": [
                             "blob", "table", "queue",
                             "functions", "cosmos", "files",
+                            "servicebus", "eventhubs", "eventgrid",
                         ],
                     })
                     return
@@ -199,6 +275,12 @@ def _make_handler(app: OpenAzure):
                     self._get_cosmos(segs, qs)
                 elif svc == "files":
                     self._get_files(segs, qs)
+                elif svc == "servicebus":
+                    self._get_servicebus(segs, qs)
+                elif svc == "eventhubs":
+                    self._get_eventhubs(segs, qs)
+                elif svc == "eventgrid":
+                    self._get_eventgrid(segs, qs)
                 else:
                     self._send_json({"error": {"code": "NotFound",
                                                "message": "unknown service"}},
@@ -240,6 +322,12 @@ def _make_handler(app: OpenAzure):
                     self._put_cosmos(segs, qs)
                 elif svc == "files":
                     self._put_files(segs, qs)
+                elif svc == "servicebus":
+                    self._put_servicebus(segs, qs)
+                elif svc == "eventhubs":
+                    self._put_eventhubs(segs, qs)
+                elif svc == "eventgrid":
+                    self._put_eventgrid(segs, qs)
                 else:
                     self._send_json({"error": {"code": "NotFound"}}, 404)
             except Exception as e:  # noqa: BLE001
@@ -293,6 +381,33 @@ def _make_handler(app: OpenAzure):
                         )
                 elif svc == "cosmos":
                     self._post_cosmos(segs, qs)
+                elif svc == "servicebus":
+                    self._post_servicebus(segs, qs)
+                elif svc == "eventhubs":
+                    self._post_eventhubs(segs, qs)
+                elif svc == "eventgrid":
+                    self._post_eventgrid(segs, qs)
+                else:
+                    self._send_json({"error": {"code": "NotFound"}}, 404)
+            except Exception as e:  # noqa: BLE001
+                self._error(e)
+
+        def do_PATCH(self):
+            try:
+                segs, qs = self._parts()
+                svc = segs[0] if segs else ""
+                if (svc == "queue" and len(segs) == 4
+                        and segs[2] == "messages"):
+                    # PATCH /queue/<queue>/messages/<id>?pop=<receipt>&vt=<seconds>
+                    body = self._read_json() if self._has_body() else {}
+                    vt = qs.get("vt")
+                    new_body = body.get("body")
+                    res = app.queue.update_message(
+                        segs[1], segs[3], qs.get("pop", ""),
+                        visibility_timeout=float(vt) if vt is not None else None,
+                        body=new_body,
+                    )
+                    self._send_json(res)
                 else:
                     self._send_json({"error": {"code": "NotFound"}}, 404)
             except Exception as e:  # noqa: BLE001
@@ -328,6 +443,12 @@ def _make_handler(app: OpenAzure):
                     self._delete_cosmos(segs, qs)
                 elif svc == "files":
                     self._delete_files(segs, qs)
+                elif svc == "servicebus":
+                    self._delete_servicebus(segs, qs)
+                elif svc == "eventhubs":
+                    self._delete_eventhubs(segs, qs)
+                elif svc == "eventgrid":
+                    self._delete_eventgrid(segs, qs)
                 else:
                     self._send_json({"error": {"code": "NotFound"}}, 404)
             except Exception as e:  # noqa: BLE001
@@ -710,6 +831,319 @@ def _make_handler(app: OpenAzure):
             else:
                 self._send_json({"error": {"code": "BadRequest"}}, 400)
 
+        # -- Service Bus sub-dispatch --------------------------------
+        def _put_servicebus(self, segs, qs):
+            # PUT /servicebus/queues/<q>
+            # PUT /servicebus/topics/<t>
+            # PUT /servicebus/topics/<t>/subscriptions/<s>
+            # PUT /servicebus/topics/<t>/subscriptions/<s>/rules/<r>
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            kind = segs[1]
+            if kind == "queues" and len(segs) == 3:
+                body = self._read_json() if self._has_body() else {}
+                res = app.servicebus.create_queue(
+                    segs[2],
+                    max_size_mb=int(body.get("max_size_mb", 1024)),
+                    lock_duration=int(body.get("lock_duration", 60)),
+                    max_delivery_count=int(body.get("max_delivery_count", 10)),
+                    requires_session=bool(body.get("requires_session", False)),
+                    dead_letter_on_expiry=bool(body.get("dead_letter_on_expiry", False)),
+                )
+                self._send_json(res, 201)
+            elif kind == "topics" and len(segs) == 3:
+                body = self._read_json() if self._has_body() else {}
+                res = app.servicebus.create_topic(
+                    segs[2],
+                    max_size_mb=int(body.get("max_size_mb", 1024)),
+                )
+                self._send_json(res, 201)
+            elif kind == "topics" and len(segs) == 5 and segs[3] == "subscriptions":
+                res = app.servicebus.create_subscription(segs[2], segs[4])
+                self._send_json(res, 201)
+            elif kind == "topics" and len(segs) == 7 and segs[3] == "subscriptions" and segs[5] == "rules":
+                body = self._read_json()
+                res = app.servicebus.add_rule(
+                    segs[2], segs[4], segs[6],
+                    filter_sql=body.get("filter_sql", "1=1"),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _get_servicebus(self, segs, qs):
+            if len(segs) < 2:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            kind = segs[1]
+            if kind == "queues" and len(segs) == 2:
+                self._send_json({"queues": app.servicebus.list_queues()})
+            elif kind == "queues" and len(segs) == 3:
+                self._send_json(app.servicebus.get_queue_properties(segs[2]))
+            elif kind == "queues" and len(segs) == 4 and segs[3] == "messages":
+                num = int(qs.get("num", 1))
+                lock = int(qs.get("lock", 60))
+                msgs = app.servicebus.receive_queue(segs[2], num, lock)
+                self._send_json({"messages": msgs})
+            elif kind == "queues" and len(segs) == 4 and segs[3] == "deadletter":
+                num = int(qs.get("num", 1))
+                msgs = app.servicebus.receive_dead_letter(segs[2], num)
+                self._send_json({"messages": msgs})
+            elif kind == "topics" and len(segs) == 2:
+                self._send_json({"topics": app.servicebus.list_topics()})
+            elif kind == "topics" and len(segs) == 4 and segs[3] == "subscriptions":
+                self._send_json(
+                    {"subscriptions": app.servicebus.list_subscriptions(segs[2])}
+                )
+            elif kind == "topics" and len(segs) == 5 and segs[3] == "subscriptions":
+                # GET /servicebus/topics/<t>/subscriptions/<s>/messages
+                # handled below
+                self._send_json({"error": {"code": "BadRequest",
+                                           "message": "append /messages"}}, 400)
+            elif kind == "topics" and len(segs) == 6 and segs[3] == "subscriptions" and segs[5] == "messages":
+                num = int(qs.get("num", 1))
+                lock = int(qs.get("lock", 60))
+                msgs = app.servicebus.receive_subscription(segs[2], segs[4], num, lock)
+                self._send_json({"messages": msgs})
+            elif kind == "topics" and len(segs) == 6 and segs[3] == "subscriptions" and segs[5] == "rules":
+                rules = app.servicebus.list_rules(segs[2], segs[4])
+                self._send_json({"rules": rules})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_servicebus(self, segs, qs):
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            kind = segs[1]
+            comp = qs.get("comp", "")
+            if kind == "queues" and len(segs) == 4 and segs[3] == "messages":
+                body = self._read_json()
+                if comp == "abandon":
+                    app.servicebus.abandon_message(segs[2], qs.get("lock", ""))
+                    self._send_json({"abandoned": True})
+                elif comp == "deadletter":
+                    app.servicebus.dead_letter_message(
+                        segs[2], qs.get("lock", ""),
+                        reason=body.get("reason", "UserDeadLettered"),
+                    )
+                    self._send_json({"dead_lettered": True})
+                else:
+                    res = app.servicebus.send_queue(
+                        segs[2],
+                        body.get("body", ""),
+                        session_id=body.get("session_id"),
+                        label=body.get("label"),
+                        properties=body.get("properties"),
+                    )
+                    self._send_json(res, 201)
+            elif kind == "topics" and len(segs) == 4 and segs[3] == "messages":
+                body = self._read_json()
+                res = app.servicebus.publish_topic(
+                    segs[2],
+                    body.get("body", ""),
+                    label=body.get("label"),
+                    properties=body.get("properties"),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _delete_servicebus(self, segs, qs):
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            kind = segs[1]
+            if kind == "queues" and len(segs) == 3:
+                app.servicebus.delete_queue(segs[2])
+                self._send_json({"deleted": True})
+            elif kind == "queues" and len(segs) == 4 and segs[3] == "messages":
+                app.servicebus.complete_message(segs[2], qs.get("lock", ""))
+                self._send_json({"completed": True})
+            elif kind == "topics" and len(segs) == 3:
+                app.servicebus.delete_topic(segs[2])
+                self._send_json({"deleted": True})
+            elif kind == "topics" and len(segs) == 5 and segs[3] == "subscriptions":
+                app.servicebus.delete_subscription(segs[2], segs[4])
+                self._send_json({"deleted": True})
+            elif kind == "topics" and len(segs) == 7 and segs[3] == "subscriptions" and segs[5] == "rules":
+                app.servicebus.remove_rule(segs[2], segs[4], segs[6])
+                self._send_json({"deleted": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        # -- Event Hubs sub-dispatch ----------------------------------
+        def _put_eventhubs(self, segs, qs):
+            # PUT /eventhubs/<hub>
+            # PUT /eventhubs/<hub>/consumergroups/<cg>
+            # PUT /eventhubs/<hub>/partitions/<p>/checkpoint
+            if len(segs) == 2:
+                body = self._read_json() if self._has_body() else {}
+                res = app.eventhubs.create_hub(
+                    segs[1],
+                    partition_count=int(body.get("partition_count", 4)),
+                    message_retention=int(body.get("message_retention", 1)),
+                )
+                self._send_json(res, 201)
+            elif len(segs) == 4 and segs[2] == "consumergroups":
+                res = app.eventhubs.create_consumer_group(segs[1], segs[3])
+                self._send_json(res, 201)
+            elif len(segs) == 5 and segs[2] == "partitions" and segs[4] == "checkpoint":
+                body = self._read_json()
+                res = app.eventhubs.update_checkpoint(
+                    segs[1],
+                    body.get("consumer_group", "$Default"),
+                    int(segs[3]),
+                    int(body.get("sequence_number", 0)),
+                    int(body.get("offset", 0)),
+                )
+                self._send_json(res)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _get_eventhubs(self, segs, qs):
+            if len(segs) == 1:
+                self._send_json({"hubs": app.eventhubs.list_hubs()})
+            elif len(segs) == 2:
+                self._send_json(app.eventhubs.get_hub_properties(segs[1]))
+            elif len(segs) == 3 and segs[2] == "partitions":
+                parts = app.eventhubs.list_partitions(segs[1])
+                self._send_json({"partitions": parts})
+            elif len(segs) == 4 and segs[2] == "partitions":
+                self._send_json(
+                    app.eventhubs.get_partition_properties(segs[1], int(segs[3]))
+                )
+            elif len(segs) == 3 and segs[2] == "consumergroups":
+                cgs = app.eventhubs.list_consumer_groups(segs[1])
+                self._send_json({"consumer_groups": cgs})
+            elif len(segs) == 5 and segs[2] == "partitions" and segs[4] == "events":
+                cg = qs.get("cg", "$Default")
+                num = int(qs.get("num", 100))
+                from_seq = int(qs["from_seq"]) if "from_seq" in qs else None
+                events = app.eventhubs.receive_events(
+                    segs[1], int(segs[3]), cg, num, from_seq
+                )
+                self._send_json({"events": events})
+            elif len(segs) == 5 and segs[2] == "partitions" and segs[4] == "checkpoint":
+                cg = qs.get("cg", "$Default")
+                cp = app.eventhubs.get_checkpoint(segs[1], cg, int(segs[3]))
+                self._send_json(cp)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_eventhubs(self, segs, qs):
+            # POST /eventhubs/<hub>/events   send event or batch
+            if len(segs) == 3 and segs[2] == "events":
+                body = self._read_json()
+                pk = qs.get("partition_key")
+                part = int(qs["partition"]) if "partition" in qs else None
+                if isinstance(body, list):
+                    res = app.eventhubs.send_batch(
+                        segs[1], body, partition_key=pk, partition=part
+                    )
+                    self._send_json({"results": res}, 201)
+                else:
+                    res = app.eventhubs.send_event(
+                        segs[1], body.get("body", ""),
+                        partition_key=body.get("partition_key", pk),
+                        partition=part,
+                        properties=body.get("properties"),
+                    )
+                    self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _delete_eventhubs(self, segs, qs):
+            if len(segs) == 2:
+                app.eventhubs.delete_hub(segs[1])
+                self._send_json({"deleted": True})
+            elif len(segs) == 4 and segs[2] == "consumergroups":
+                app.eventhubs.delete_consumer_group(segs[1], segs[3])
+                self._send_json({"deleted": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        # -- Event Grid sub-dispatch ----------------------------------
+        def _put_eventgrid(self, segs, qs):
+            # PUT /eventgrid/topics/<t>
+            # PUT /eventgrid/topics/<t>/subscriptions/<s>
+            if len(segs) < 3:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            if segs[1] != "topics":
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            if len(segs) == 3:
+                body = self._read_json() if self._has_body() else {}
+                res = app.eventgrid.create_topic(
+                    segs[2],
+                    schema=body.get("schema", "EventGridSchema"),
+                )
+                self._send_json(res, 201)
+            elif len(segs) == 5 and segs[3] == "subscriptions":
+                body = self._read_json() if self._has_body() else {}
+                res = app.eventgrid.create_subscription(
+                    segs[2], segs[4],
+                    endpoint_url=body.get("endpoint_url"),
+                    event_types=body.get("event_types"),
+                    subject_begins_with=body.get("subject_begins_with"),
+                    subject_ends_with=body.get("subject_ends_with"),
+                    property_filters=body.get("property_filters"),
+                )
+                self._send_json(res, 201)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _get_eventgrid(self, segs, qs):
+            if len(segs) < 2 or segs[1] != "topics":
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            if len(segs) == 2:
+                self._send_json({"topics": app.eventgrid.list_topics()})
+            elif len(segs) == 3:
+                self._send_json(app.eventgrid.get_topic(segs[2]))
+            elif len(segs) == 4 and segs[3] == "events":
+                sub = qs.get("sub")
+                ev_type = qs.get("type")
+                limit = int(qs.get("limit", 100))
+                events = app.eventgrid.list_events(
+                    segs[2], subscription=sub,
+                    event_type=ev_type, limit=limit,
+                )
+                self._send_json({"events": events})
+            elif len(segs) == 4 and segs[3] == "subscriptions":
+                subs = app.eventgrid.list_subscriptions(segs[2])
+                self._send_json({"subscriptions": subs})
+            elif len(segs) == 5 and segs[3] == "subscriptions":
+                self._send_json(app.eventgrid.get_subscription(segs[2], segs[4]))
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _post_eventgrid(self, segs, qs):
+            # POST /eventgrid/topics/<t>/events
+            if (len(segs) == 4 and segs[1] == "topics" and segs[3] == "events"):
+                events = self._read_json()
+                if not isinstance(events, list):
+                    events = [events]
+                res = app.eventgrid.publish(segs[2], events)
+                self._send_json(res, 200)
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
+        def _delete_eventgrid(self, segs, qs):
+            if len(segs) < 3 or segs[1] != "topics":
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+                return
+            if len(segs) == 3:
+                app.eventgrid.delete_topic(segs[2])
+                self._send_json({"deleted": True})
+            elif len(segs) == 5 and segs[3] == "subscriptions":
+                app.eventgrid.delete_subscription(segs[2], segs[4])
+                self._send_json({"deleted": True})
+            else:
+                self._send_json({"error": {"code": "BadRequest"}}, 400)
+
         # Override do_POST to handle block staging
         _orig_post = do_POST
 
@@ -787,6 +1221,12 @@ def _make_handler(app: OpenAzure):
                     )
             elif svc == "cosmos":
                 self_h._post_cosmos(segs, qs)
+            elif svc == "servicebus":
+                self_h._post_servicebus(segs, qs)
+            elif svc == "eventhubs":
+                self_h._post_eventhubs(segs, qs)
+            elif svc == "eventgrid":
+                self_h._post_eventgrid(segs, qs)
             else:
                 self_h._send_json({"error": {"code": "NotFound"}}, 404)
         except Exception as e:  # noqa: BLE001
