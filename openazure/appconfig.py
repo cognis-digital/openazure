@@ -205,8 +205,10 @@ class AppConfigService:
     def list_revisions(self, store: str, key: str,
                        label: str = "") -> list[dict]:
         rows = self.store.query(
+            # rowid (insertion order) breaks ties when two Set calls land in the
+            # same time.time() tick — otherwise newest-first ordering is unstable.
             "SELECT * FROM ac_revisions WHERE store=? AND key=? AND label=? "
-            "ORDER BY modified DESC",
+            "ORDER BY modified DESC, rowid DESC",
             (store, key, label),
         )
         return [self._rev_dict(r) for r in rows]
