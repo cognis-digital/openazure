@@ -1,0 +1,18 @@
+$ openazure-emit --help
+
+usage: openazure-emit [-h]
+                      --to {stix,taxii,misp,sigma,splunk,elastic,slack,discord,webhook,brief,findings}
+                      [--url URL] [--token TOKEN] [--dry-run]
+                      [input]
+
+forward openazure JSON findings to a platform via cognis-connect
+
+positional arguments:
+  input                 findings JSON file (default: stdin)
+
+options:
+  -h, --help            show this help message and exit
+  --to {stix,taxii,misp,sigma,splunk,elastic,slack,discord,webhook,brief,findings}
+  --url URL
+  --token TOKEN
+  --dry-run

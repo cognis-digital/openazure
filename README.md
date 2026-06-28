@@ -1,5 +1,58 @@
 # openazure
 
+
+<!-- cognis:example:start -->
+## 🔎 Example output
+
+Real, reproducible output from the tool — runs offline:
+
+```console
+$ openazure-emit --help
+usage: openazure-emit [-h]
+                      --to {stix,taxii,misp,sigma,splunk,elastic,slack,discord,webhook,brief,findings}
+                      [--url URL] [--token TOKEN] [--dry-run]
+                      [input]
+
+forward openazure JSON findings to a platform via cognis-connect
+
+positional arguments:
+  input                 findings JSON file (default: stdin)
+
+options:
+  -h, --help            show this help message and exit
+  --to {stix,taxii,misp,sigma,splunk,elastic,slack,discord,webhook,brief,findings}
+  --url URL
+  --token TOKEN
+  --dry-run
+```
+
+> Blocks above are real `openazure` output — reproduce them from a clone.
+
+**Sample result format** _(illustrative values — run on your own data for real findings):_
+
+```
+{
+  "Findings": [
+    {
+      "id": "1234567890",
+      "title": "Suspicious Network Traffic",
+      "description": "Network traffic detected from unknown IP address",
+      "severity": "medium",
+      "created_at": "2023-02-15T14:30:00Z"
+    },
+    {
+      "id": "2345678901",
+      "title": "Malware Detected",
+      "description": "Malware identified on system",
+      "severity": "high",
+      "created_at": "2023-02-16T10:45:00Z"
+    }
+  ]
+}
+```
+
+<!-- cognis:example:end -->
+
 ## Usage — step by step
 
 `openazure` is a local open-source emulator of Azure primitives (blob / queue),
